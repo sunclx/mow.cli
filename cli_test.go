@@ -2,10 +2,6 @@ package cli
 
 import (
 	"flag"
-	"fmt"
-	"io/ioutil"
-	"os"
-	"os/exec"
 
 	"github.com/stretchr/testify/require"
 
@@ -50,35 +46,107 @@ func TestImplicitSpec(t *testing.T) {
 	require.True(t, called, "Exec wasn't called")
 }
 
-func forkTest(testName string, fork func(), test func(err error)) {
-	if os.Getenv("MOW_DO_IT") == "1" {
-		fork()
-	} else {
-		cmd := exec.Command(os.Args[0], "-test.run="+testName)
-		cmd.Stderr = ioutil.Discard
-		cmd.Stdout = ioutil.Discard
+func TestHelpShortcut(t *testing.T) {
+	defer suppressOutput()()
 
-		cmd.Env = append(os.Environ(), "MOW_DO_IT=1")
-		test(cmd.Run())
+	exitCalled := false
+	defer exitShouldBeCalledWith(t, 2, &exitCalled)()
+
+	app := App("x", "")
+	app.Spec = "Y"
+
+	app.String(StringArg{Name: "Y", Value: "", Desc: ""})
+
+	actionCalled := false
+	app.Action = func() {
+		actionCalled = true
 	}
+	app.Run([]string{"x", "y", "-h", "z"})
+
+	require.False(t, actionCalled, "action should not have been called")
+	require.True(t, exitCalled, "exit should have been called")
 }
 
-func TestHelpShortcut(t *testing.T) {
-	forkTest("TestHelpShortcut",
-		func() {
-			app := App("x", "")
-			app.Spec = "Y"
+func TestHelpMessage(t *testing.T) {
+	var out, err string
+	defer captureAndRestoreOutput(&out, &err)()
 
-			app.String(StringArg{Name: "Y", Value: "", Desc: ""})
-			app.Run([]string{"x", "y", "-h", "z"})
-		},
-		func(err error) {
-			fmt.Printf("test fork err %v\n", err)
-			if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-				return
-			}
-			t.Fatalf("process ran with err %v, want exit status != 0", err)
-		})
+	exitCalled := false
+	defer exitShouldBeCalledWith(t, 2, &exitCalled)()
+
+	app := App("app", "App Desc")
+	app.Spec = "[-o] ARG"
+
+	app.String(StringOpt{Name: "o opt", Value: "", Desc: "Option"})
+	app.String(StringArg{Name: "ARG", Value: "", Desc: "Argument"})
+
+	app.Action = func() {}
+	app.Run([]string{"app", "-h"})
+
+	help := `
+Usage: app [-o] ARG
+
+App Desc
+
+Arguments:
+  ARG=""       Argument
+
+Options:
+  -o, --opt=""   Option
+`
+
+	require.Equal(t, help, err)
+}
+
+func TestLongHelpMessage(t *testing.T) {
+	var out, err string
+	defer captureAndRestoreOutput(&out, &err)()
+
+	exitCalled := false
+	defer exitShouldBeCalledWith(t, 2, &exitCalled)()
+
+	app := App("app", "App Desc")
+	app.LongDesc = "Longer App Desc"
+	app.Spec = "[-o] ARG"
+
+	app.String(StringOpt{Name: "o opt", Value: "", Desc: "Option"})
+	app.String(StringArg{Name: "ARG", Value: "", Desc: "Argument"})
+
+	app.Action = func() {}
+	app.Run([]string{"app", "-h"})
+
+	help := `
+Usage: app [-o] ARG
+
+Longer App Desc
+
+Arguments:
+  ARG=""       Argument
+
+Options:
+  -o, --opt=""   Option
+`
+
+	require.Equal(t, help, err)
+}
+
+func TestVersionShortcut(t *testing.T) {
+	defer suppressOutput()()
+	exitCalled := false
+	defer exitShouldBeCalledWith(t, 0, &exitCalled)()
+
+	app := App("cp", "")
+	app.Version("v version", "cp 1.2.3")
+
+	actionCalled := false
+	app.Action = func() {
+		actionCalled = true
+	}
+
+	app.Run([]string{"cp", "--version"})
+
+	require.False(t, actionCalled, "action should not have been called")
+	require.True(t, exitCalled, "exit should have been called")
 }
 
 func TestSubCommands(t *testing.T) {
@@ -104,6 +172,9 @@ func TestSubCommands(t *testing.T) {
 }
 
 func TestContinueOnError(t *testing.T) {
+	defer exitShouldNotCalled(t)()
+	defer suppressOutput()()
+
 	app := App("say", "")
 	app.String(StringOpt{Name: "f", Value: "", Desc: ""})
 	app.Spec = "-f"
@@ -119,23 +190,22 @@ func TestContinueOnError(t *testing.T) {
 }
 
 func TestExitOnError(t *testing.T) {
-	forkTest("TestHelpShortcut",
-		func() {
-			app := App("x", "")
-			app.Spec = "Y"
+	defer suppressOutput()()
 
-			app.String(StringArg{Name: "Y", Value: "", Desc: ""})
-			app.Run([]string{"x", "y", "z"})
-		},
-		func(err error) {
-			if e, ok := err.(*exec.ExitError); ok && !e.Success() {
-				return
-			}
-			t.Fatalf("process ran with err %v, want exit status != 0", err)
-		})
+	exitCalled := false
+	defer exitShouldBeCalledWith(t, 2, &exitCalled)()
+
+	app := App("x", "")
+	app.Spec = "Y"
+
+	app.String(StringArg{Name: "Y", Value: "", Desc: ""})
+	app.Run([]string{"x", "y", "z"})
+	require.True(t, exitCalled, "exit should have been called")
 }
 
 func TestPanicOnError(t *testing.T) {
+	defer suppressOutput()()
+
 	app := App("say", "")
 	app.String(StringOpt{Name: "f", Value: "", Desc: ""})
 	app.Spec = "-f"

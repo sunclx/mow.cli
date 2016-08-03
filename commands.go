@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"os"
 	"strings"
 	"text/tabwriter"
 )
@@ -17,8 +16,14 @@ command to create a sub command
 type Cmd struct {
 	// The code to execute when this command is matched
 	Action func()
+	// The code to execute before this command or any of its children is matched
+	Before func()
+	// The code to execute after this command or any of its children is matched
+	After func()
 	// The command options and arguments
 	Spec string
+	// The command long description to be shown when help is requested
+	LongDesc string
 	// The command error handling strategy
 	ErrorHandling flag.ErrorHandling
 
@@ -210,13 +215,13 @@ func (c *Cmd) onError(err error) {
 	if err != nil {
 		switch c.ErrorHandling {
 		case flag.ExitOnError:
-			os.Exit(2)
+			exiter(2)
 		case flag.PanicOnError:
 			panic(err)
 		}
 	} else {
 		if c.ErrorHandling == flag.ExitOnError {
-			os.Exit(2)
+			exiter(2)
 		}
 	}
 }
@@ -227,23 +232,45 @@ In most cases the library users won't need to call this method, unless
 a more complex validation is needed
 */
 func (c *Cmd) PrintHelp() {
-	out := os.Stderr
+	c.printHelp(false)
+}
 
+/*
+PrintHelp prints the command's help message using the command long description if specified.
+In most cases the library users won't need to call this method, unless
+a more complex validation is needed
+*/
+func (c *Cmd) PrintLongHelp() {
+	c.printHelp(true)
+}
+
+func (c *Cmd) printHelp(longDesc bool) {
 	full := append(c.parents, c.name)
-	sub := ""
-	if len(c.commands) > 0 {
-		sub = "COMMAND [arg...]"
-	}
 	path := strings.Join(full, " ")
-	fmt.Fprintf(out, "\nUsage: %s %s %s\n\n", path, strings.TrimSpace(c.Spec), sub)
-	if len(c.desc) > 0 {
-		fmt.Fprintf(out, "%s\n", c.desc)
+	fmt.Fprintf(stdErr, "\nUsage: %s", path)
+
+	spec := strings.TrimSpace(c.Spec)
+	if len(spec) > 0 {
+		fmt.Fprintf(stdErr, " %s", spec)
 	}
 
-	w := tabwriter.NewWriter(out, 15, 1, 3, ' ', 0)
+	if len(c.commands) > 0 {
+		fmt.Fprint(stdErr, " COMMAND [arg...]")
+	}
+	fmt.Fprint(stdErr, "\n\n")
+
+	desc := c.desc
+	if longDesc && len(c.LongDesc) > 0 {
+		desc = c.LongDesc
+	}
+	if len(desc) > 0 {
+		fmt.Fprintf(stdErr, "%s\n", desc)
+	}
+
+	w := tabwriter.NewWriter(stdErr, 15, 1, 3, ' ', 0)
 
 	if len(c.args) > 0 {
-		fmt.Fprintf(out, "\nArguments:\n")
+		fmt.Fprintf(stdErr, "\nArguments:\n")
 
 		for _, arg := range c.args {
 			desc := c.formatDescription(arg.desc, arg.envVar)
@@ -255,7 +282,7 @@ func (c *Cmd) PrintHelp() {
 	}
 
 	if len(c.options) > 0 {
-		fmt.Fprintf(out, "\nOptions:\n")
+		fmt.Fprintf(stdErr, "\nOptions:\n")
 
 		for _, opt := range c.options {
 			desc := c.formatDescription(opt.desc, opt.envVar)
@@ -266,7 +293,7 @@ func (c *Cmd) PrintHelp() {
 	}
 
 	if len(c.commands) > 0 {
-		fmt.Fprintf(out, "\nCommands:\n")
+		fmt.Fprintf(stdErr, "\nCommands:\n")
 
 		for _, c := range c.commands {
 			fmt.Fprintf(w, "  %s\t%s\n", c.name, c.desc)
@@ -275,28 +302,22 @@ func (c *Cmd) PrintHelp() {
 	}
 
 	if len(c.commands) > 0 {
-		fmt.Fprintf(out, "\nRun '%s COMMAND --help' for more information on a command.\n", path)
+		fmt.Fprintf(stdErr, "\nRun '%s COMMAND --help' for more information on a command.\n", path)
 	}
 }
 
 func (c *Cmd) formatArgValue(arg *arg) string {
-	var value string
 	if arg.hideValue {
-		value = " "
-	} else {
-		value = fmt.Sprintf("=%#v", arg.get())
+		return " "
 	}
-	return value
+	return "=" + arg.helpFormatter(arg.get())
 }
 
 func (c *Cmd) formatOptValue(opt *opt) string {
-	var value string
 	if opt.hideValue {
-		value = " "
-	} else {
-		value = fmt.Sprintf("=%#v", opt.get())
+		return " "
 	}
-	return value
+	return "=" + opt.helpFormatter(opt.get())
 }
 
 func (c *Cmd) formatDescription(desc, envVar string) string {
@@ -314,9 +335,9 @@ func (c *Cmd) formatDescription(desc, envVar string) string {
 	return strings.TrimSpace(b.String())
 }
 
-func (c *Cmd) parse(args []string) error {
+func (c *Cmd) parse(args []string, entry, inFlow, outFlow *step) error {
 	if c.helpRequested(args) {
-		c.PrintHelp()
+		c.PrintLongHelp()
 		c.onError(nil)
 		return nil
 	}
@@ -324,16 +345,37 @@ func (c *Cmd) parse(args []string) error {
 	nargsLen := c.getOptsAndArgs(args)
 
 	if err := c.fsm.parse(args[:nargsLen]); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", err.Error())
+		fmt.Fprintf(stdErr, "Error: %s\n", err.Error())
 		c.PrintHelp()
 		c.onError(err)
 		return err
 	}
 
+	newInFlow := &step{
+		do:    c.Before,
+		error: outFlow,
+		desc:  fmt.Sprintf("%s.Before", c.name),
+	}
+	inFlow.success = newInFlow
+
+	newOutFlow := &step{
+		do:      c.After,
+		success: outFlow,
+		error:   outFlow,
+		desc:    fmt.Sprintf("%s.After", c.name),
+	}
+
 	args = args[nargsLen:]
 	if len(args) == 0 {
 		if c.Action != nil {
-			c.Action()
+			newInFlow.success = &step{
+				do:      c.Action,
+				success: newOutFlow,
+				error:   newOutFlow,
+				desc:    fmt.Sprintf("%s.Action", c.name),
+			}
+
+			entry.run(nil)
 			return nil
 		}
 		c.PrintHelp()
@@ -347,7 +389,7 @@ func (c *Cmd) parse(args []string) error {
 			if err := sub.doInit(); err != nil {
 				panic(err)
 			}
-			return sub.parse(args[1:])
+			return sub.parse(args[1:], entry, newInFlow, newOutFlow)
 		}
 	}
 
@@ -355,10 +397,10 @@ func (c *Cmd) parse(args []string) error {
 	switch {
 	case strings.HasPrefix(arg, "-"):
 		err = fmt.Errorf("Error: illegal option %s", arg)
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(stdErr, err.Error())
 	default:
 		err = fmt.Errorf("Error: illegal input %s", arg)
-		fmt.Fprintln(os.Stderr, err.Error())
+		fmt.Fprintln(stdErr, err.Error())
 	}
 	c.PrintHelp()
 	c.onError(err)
@@ -366,18 +408,24 @@ func (c *Cmd) parse(args []string) error {
 
 }
 
-func (c *Cmd) helpRequested(args []string) bool {
+func (c *Cmd) isArgSet(args []string, searchArgs []string) bool {
 	for _, arg := range args {
 		for _, sub := range c.commands {
 			if arg == sub.name {
 				return false
 			}
 		}
-		if arg == "-h" || arg == "--help" {
-			return true
+		for _, searchArg := range searchArgs {
+			if arg == searchArg {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func (c *Cmd) helpRequested(args []string) bool {
+	return c.isArgSet(args, []string{"-h", "--help"})
 }
 
 func (c *Cmd) getOptsAndArgs(args []string) int {

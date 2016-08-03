@@ -3,37 +3,34 @@
 [![Build Status](https://travis-ci.org/jawher/mow.cli.svg?branch=master)](https://travis-ci.org/jawher/mow.cli)
 [![GoDoc](https://godoc.org/github.com/jawher/mow.cli?status.svg)](https://godoc.org/github.com/jawher/mow.cli)
 
-A framework to build command line applications in Go with most of the burden of arguments parsing and validation placed on the framework instead of the user.
+A framework to build command line applications in Go with most of the burden of arguments parsing and validation placed on the framework instead of the developer.
 
 
 ## Motivation
 
-The default `flag` package is fun and very easy to use but has several limitations:
+|                                                                      | mow.cli | codegangsta/cli | flag |
+|----------------------------------------------------------------------|---------|-----------------|------|
+| Contextual help                                                      | ✓       | ✓               |      |
+| Commands                                                             | ✓       | ✓               |      |
+| Option folding  `-xyz`                                               | ✓       |                 |      |
+| Option Value folding  `-fValue`                                      | ✓       |                 |      |
+| Option exclusion: `--start ❘ --stop`                                 | ✓       |                 |      |
+| Option dependency : `[-a -b]` or `[-a [-b]]`                         | ✓       |                 |      |
+| Arguments validation : `SRC DST`                                     | ✓       |                 |      |
+| Argument optionality : `SRC [DST]`                                   | ✓       |                 |      |
+| Argument repetition : `SRC... DST`                                   | ✓       |                 |      |
+| Option/Argument dependency : `SRC [-f DST]`                          | ✓       |                 |      |
+| Any combination of the above: `[-d ❘ --rm] IMAGE [COMMAND [ARG...]]` | ✓        |                 |      |
 
-* No argument validation: it only handles flags, it is up to use to manually parse and validations the command arguments
-* Doesn't handle option folding: `-abc` (synonym for `-a -b -c`)
-* Doesn't handle glued options name and value: `-Ivalue`
-* Doesn't handle commands and sub commands
-* Doesn't handle mandatory/optional flags nor flag exclusion `--stop|--start`
-* And the list goes on
+In the goland, docopt is another library with rich flags and arguments validation.
+However, it falls short for many use cases:
 
-Docopt fixes many of these limitations but it too exhibits the following problems:
-
-* No contexual help: either your call is correct and it works, or the whole help message is dumped, no matter the path you took
-* It is up to you to switch on the parse result and decide what code path to execute and which parameters to pass
-
-Another popular CLI library in the Goland is `codegangsta/cli`.
-It brings many good ideas to the table: very readable (albeit a bit on the verbose side) and it spares you the switching part as it calls the correct code path.
-It too suffers from the following limitations:
-
-* Option duplication: you need to declare a flag in the command flags list (with its name and type), and then to use it, in your action you need to extract it from a context object using its name and type again.
-* Doesn't handle argument validation
-
-mow.cli is my humble attempt at solving these issues and providing an alternative.
-
-Here's a quick demo of mow.cli's contexual help messages:
-
-![help](http://i.imgur.com/LGrRiyJ.gif)
+|                             | mow.cli | docopt |
+|-----------------------------|---------|--------|
+| Contextual help             | ✓       |        |
+| Backtracking: `SRC... DST`  | ✓       |        |
+| Backtracking: `[SRC] DST`   | ✓       |        |
+| Branching: `(SRC ❘ -f DST)` | ✓        |        |
 
 ## Installation
 
@@ -43,12 +40,45 @@ To install this library, simply run:
 $ go get github.com/jawher/mow.cli
 ```
 
+## First app
+
+Here's a sample showcasing many features of mow.cli: flags, arguments, and spec string:
+
+```go
+package main
+
+import (
+    "fmt"
+    "os"
+
+    "github.com/jawher/mow.cli"
+)
+
+func main() {
+    app := cli.App("cp", "Copy files around")
+
+    app.Spec = "[-r] SRC... DST"
+
+    var (
+        recursive = app.BoolOpt("r recursive", false, "Copy files recursively")
+        src       = app.StringsArg("SRC", nil, "Source files to copy")
+        dst       = app.StringArg("DST", "", "Destination where to copy files to")
+    )
+
+    app.Action = func() {
+        fmt.Printf("Copying %v to %s [recursively: %v]\n", *src, *dst, *recursive)
+    }
+
+    app.Run(os.Args)
+}
+```
+
 ## Basics
 
 You start by creating an application by passing a name and a description:
 
 ```go
-cp = cli.App("cp", "Copy files around")
+cp := cli.App("cp", "Copy files around")
 ```
 
 To attach the code to execute when the app is launched, assign a function to the Action field:
@@ -57,6 +87,12 @@ cp.Action = func() {
     fmt.Printf("Hello world\n")
 }
 ```
+
+If you want you can add support for printing the app version (invoked by ```-v, --version```) like so:
+```go
+cp.Version("v version", "cp 1.2.3")
+```
+
 Finally, in your main func, call Run on the app:
 
 ```go
@@ -70,7 +106,7 @@ To add a (global) option, call one of the (String[s]|Int[s]|Bool)Opt methods on 
 recursive := cp.BoolOpt("R recursive", false, "recursively copy the src to dst")
 ```
 
-* The first argument is a space seperated list of names for the option without the dashes
+* The first argument is a space separated list of names for the option without the dashes
 * The second parameter is the default value for the option
 * The third and last parameter is the option description, as will be shown in the help messages
 
@@ -146,13 +182,12 @@ src = cp.Strings(StringsArg{
 ```
 
 The field names are self-describing.
-The Value field is where you can set the inital value for the argument.
+The Value field is where you can set the initial value for the argument.
 
 EnvVar accepts a space separated list of environment variables names to be used to initialize the argument.
 
 The result is a pointer to a value that will be populated after parsing the command line arguments.
 You can access the values in the Action func.
-
 
 ## Operators
 
@@ -222,6 +257,18 @@ bzk.Command("job", "actions on jobs", func(cmd *cli.Cmd) {
     cmd.Command("log", "show a job log", nil)
 })
 ```
+When you just want to set Action to cmd, you can use ActionCommand function for this
+```go
+app.Command("list", "list all configs", cli.ActionCommand(func() { list() }))
+```
+is the same as
+```go
+app.Command("list", "list all configs", func(cmd *cli.Cmd)) {
+    cmd.Action = func() {
+      list()
+    }
+}
+```
 
 This could go on to any depth if need be.
 
@@ -234,6 +281,52 @@ Since you'll want to store these pointers in variables, and to avoid having doze
 mow.cli's API was specifically tailored to take a func parameter (called CmdInitializer) which accepts the command struct.
 
 This way, the command specific variables scope is limited to this function.
+
+## Interceptors
+
+It is possible to define snippets of code to be executed before and after a command or any of its sub commands is executed.
+
+For example, given an app with multiple commands but with a global flag which toggles a verbose mode:
+
+```go
+app := cli.App("app", "bla bla")
+
+verbose := app.Bool(cli.BoolOpt{
+	Name:  "verbose",
+	Value: false,
+	Desc:  "Enable debug logs",
+})
+
+app.Command("command1", "...", func(cmd *cli.Cmd) {
+
+})
+
+app.Command("command2", "...", func(cmd *cli.Cmd) {
+
+})
+```
+
+Instead of repeating yourself by checking if the verbose flag is set or not, and setting the debug level in every command (and its sub-commands),
+a before interceptor can be set on the `app` instead:
+
+```go
+app.Before = func() {
+	if (*verbose) {
+		logrus.SetLevel(logrus.DebugLevel)
+	}
+}
+```
+
+Whenever a valid command is called by the user, all the before interceptors defined on the app and the intermediate commands
+will be called, in order from the root to the leaf.
+
+Similarly, if you need to execute a code snippet after a command has been called, e.g. to cleanup resources allocated in before interceptors,
+simply set the `After` field of the app struct or any other command.
+`After` interceptors will be called, in order from the leaf up to the root (the opposite order of the `Before` interceptors).
+
+Here's a diagram which shows in when and in which order multiple `Before` and `After` interceptors get executed:
+
+![flow](http://i.imgur.com/oUEa8Sh.png)
 
 ## Spec
 
@@ -299,14 +392,21 @@ x.StringArg("DST", ...)
 
 ### Ordering
 
-The order of the elements in a spec string is respected and enforced when parsing the command line arguments:
+Except for options, The order of the elements in a spec string is respected and enforced when parsing the command line arguments:
+
 ```go
-x.Spec = "-f SRC DST"
+x.Spec = "-f -g SRC -h DST"
 ```
+
+Consecutive options (`-f` and `-g` for example) get parsed regardless of the order they are specified in (both `-f=5 -g=6` and `-g=6 -f=5` are valid).
+
+Order between options and arguments is significant (`-f` and `-g` must appear before the `SRC` argument).
+
+Same goes for arguments, where `SRC` must appear before `DST`.
 
 ### Optionality
 
-You can mark iterms as optional in a spec string by enclosing them in squqre brackets :`[...]`
+You can mark items as optional in a spec string by enclosing them in square brackets :`[...]`
 ```go
 x.Spec = "[-x]"
 ```
@@ -338,7 +438,7 @@ x.Spec = "(-e COMMAND)... | (-x|-y)"
 ```
 
 The parenthesis in the example above serve to mark that it is the sequence of a -e flag followed by an argument that is repeatable, and that
-all that is mutually exclusive to a choice betwwen -x and -y options.
+all that is mutually exclusive to a choice between -x and -y options.
 
 ### Option group
 
@@ -371,6 +471,17 @@ For example, if an app or a command declares 4 options a, b, c and d, `[OPTIONS]
 x.Spec = "[-a | -b | -c | -d]..."
 ```
 
+### Inline option values
+
+You can use the `=<some-text>` notation right after an option (long or short form) to give an inline description or value.
+
+An example:
+
+```go
+x.Spec = "[ -a=<absolute-path> | --timeout=<in seconds> ] ARG"
+```
+
+The inline values are ignored by the spec parser and are just there for the final user as a contextual hint.
 
 ### Operators
 
@@ -424,7 +535,7 @@ By default, and unless a spec string is set by the user, mow.cli auto-generates 
 * If at least one option was declared, append `[OPTIONS]` to the spec string
 * For every declared argument, append it, in the order of declaration, to the spec string
 
-For example, given this command delcaration:
+For example, given this command declaration:
 
 ```go
 docker.Command("run", "Run a command in a new container", func(cmd *cli.Cmd) {
@@ -442,6 +553,12 @@ The auto-generated spec string would be:
 ```
 
 Which should suffice for simple cases. If not, the spec string has to be set explicitly.
+
+## Exiting
+
+`mow.cli` provides the `Exit` function which accepts an exit code and exits the app with the provided code.
+
+You are highly encouraged to call `cli.Exit` instead of `os.Exit` for the `After` interceptors to be executed.
 
 ## License
 

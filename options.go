@@ -6,15 +6,7 @@ import (
 	"strings"
 )
 
-type opt struct {
-	name      string
-	desc      string
-	envVar    string
-	names     []string
-	value     reflect.Value
-	hideValue bool
-}
-
+// BoolOpt describes a boolean option
 type BoolOpt struct {
 	BoolParam
 
@@ -31,6 +23,7 @@ type BoolOpt struct {
 	HideValue bool
 }
 
+// StringOpt describes a string option
 type StringOpt struct {
 	StringParam
 
@@ -47,6 +40,7 @@ type StringOpt struct {
 	HideValue bool
 }
 
+// IntOpt describes an int option
 type IntOpt struct {
 	IntParam
 
@@ -63,6 +57,7 @@ type IntOpt struct {
 	HideValue bool
 }
 
+// StringsOpt describes a string slice option
 type StringsOpt struct {
 	StringsParam
 
@@ -80,6 +75,7 @@ type StringsOpt struct {
 	HideValue bool
 }
 
+// IntsOpt describes an int slice option
 type IntsOpt struct {
 	IntsParam
 
@@ -162,6 +158,16 @@ func (c *Cmd) IntsOpt(name string, value []int, desc string) *[]int {
 	return c.mkOpt(opt{name: name, desc: desc}, value).(*[]int)
 }
 
+type opt struct {
+	name          string
+	desc          string
+	envVar        string
+	names         []string
+	helpFormatter func(interface{}) string
+	value         reflect.Value
+	hideValue     bool
+}
+
 func (o *opt) isBool() bool {
 	return o.value.Elem().Kind() == reflect.Bool
 }
@@ -177,13 +183,8 @@ func (o *opt) set(s string) error {
 	return vset(o.value, s)
 }
 
-func (c *Cmd) mkOpt(opt opt, defaultValue interface{}) interface{} {
-	value := reflect.ValueOf(defaultValue)
-	res := reflect.New(value.Type())
-
-	vinit(res, opt.envVar, defaultValue)
-
-	namesSl := strings.Split(opt.name, " ")
+func mkOptStrs(optName string) []string {
+	namesSl := strings.Split(optName, " ")
 	for i, name := range namesSl {
 		prefix := "-"
 		if len(name) > 1 {
@@ -191,12 +192,22 @@ func (c *Cmd) mkOpt(opt opt, defaultValue interface{}) interface{} {
 		}
 		namesSl[i] = prefix + name
 	}
+	return namesSl
+}
 
-	opt.names = namesSl
+func (c *Cmd) mkOpt(opt opt, defaultValue interface{}) interface{} {
+	value := reflect.ValueOf(defaultValue)
+	res := reflect.New(value.Type())
+
+	opt.helpFormatter = formatterFor(value.Type())
+
+	vinit(res, opt.envVar, defaultValue)
+
+	opt.names = mkOptStrs(opt.name)
 	opt.value = res
 
 	c.options = append(c.options, &opt)
-	for _, name := range namesSl {
+	for _, name := range opt.names {
 		c.optionsIdx[name] = &opt
 	}
 
